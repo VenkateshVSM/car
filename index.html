@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Road Rush</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #111; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: system-ui, sans-serif; color: #fff; }
+  #hud { display: flex; gap: 32px; margin-bottom: 12px; font-size: 14px; color: #aaa; }
+  #hud span { font-weight: 600; font-size: 18px; color: #fff; }
+  #canvas-wrap { position: relative; border-radius: 12px; overflow: hidden; border: 1px solid #333; }
+  #gameCanvas { display: block; }
+  #overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: rgba(0,0,0,0.75); color: #fff; gap: 12px; }
+  #overlay h2 { font-size: 28px; font-weight: 600; margin: 0; }
+  #overlay p { font-size: 14px; color: rgba(255,255,255,0.7); margin: 0; }
+  #startBtn { margin-top: 8px; padding: 10px 28px; border-radius: 8px; border: none; background: #1D9E75; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer; transition: opacity .15s; }
+  #startBtn:hover { opacity: .85; }
+  #controls { margin-top: 14px; display: flex; gap: 10px; }
+  #controls button { width: 52px; height: 52px; border-radius: 8px; border: 1px solid #444; background: #222; color: #fff; font-size: 22px; cursor: pointer; transition: background .1s; display: flex; align-items: center; justify-content: center; }
+  #controls button:active { background: #333; }
+  #hint { font-size: 13px; color: #666; margin-top: 10px; }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div>Score <span id="scoreVal">0</span></div>
+  <div>Best <span id="bestVal">0</span></div>
+  <div>Lives <span id="livesVal">❤️❤️❤️</span></div>
+</div>
+<div id="canvas-wrap">
+  <canvas id="gameCanvas" width="360" height="520"></canvas>
+  <div id="overlay">
+    <h2>🚗 Road Rush</h2>
+    <p>Dodge traffic · Collect coins · Don't crash</p>
+    <button id="startBtn">Start Game</button>
+  </div>
+</div>
+<div id="controls">
+  <button id="btnLeft" aria-label="Move left">◀</button>
+  <button id="btnRight" aria-label="Move right">▶</button>
+</div>
+<div id="hint">Arrow keys · A/D · or tap buttons above</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const overlay = document.getElementById('overlay');
+const scoreEl = document.getElementById('scoreVal');
+const bestEl = document.getElementById('bestVal');
+const livesEl = document.getElementById('livesVal');
+
+const W = canvas.width, H = canvas.height;
+const LANES = [70, 140, 210, 280];
+const CAR_W = 34, CAR_H = 58;
+
+let state, raf;
+
+function newGame() {
+  state = {
+    running: true,
+    score: 0,
+    best: state ? state.best : 0,
+    lives: 3,
+    speed: 3.5,
+    player: { lane: 1, x: LANES[1], y: H - 100, invincible: 0 },
+    enemies: [],
+    coins: [],
+    road: [0, -H],
+    frame: 0,
+    spawnTimer: 0,
+    coinTimer: 0,
+    particles: []
+  };
+}
+
+function drawRoad(offsets) {
+  ctx.fillStyle = '#2a2a2a';
+  ctx.fillRect(40, 0, 280, H);
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([30, 20]);
+  [105, 175, 245].forEach(x => {
+    ctx.beginPath();
+    for (let i = 0; i < 2; i++) {
+      ctx.moveTo(x, offsets[i] % 50 - 50);
+      ctx.lineTo(x, H);
+    }
+    ctx.stroke();
+  });
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#888';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(40, 0); ctx.lineTo(40, H); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(320, 0); ctx.lineTo(320, H); ctx.stroke();
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, 40, H);
+  ctx.fillRect(320, 0, 40, H);
+  ctx.fillStyle = '#555';
+  for (let y = -20 + offsets[0] % 40; y < H; y += 40) {
+    ctx.fillRect(0, y, 40, 20);
+    ctx.fillRect(320, y, 40, 20);
+  }
+}
+
+function drawCar(x, y, color, highlight, isPlayer, inv) {
+  if (isPlayer && inv > 0 && Math.floor(inv / 4) % 2 === 0) return;
+  const cx = x - CAR_W / 2;
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.roundRect(cx, y, CAR_W, CAR_H, [6]);
+  ctx.fill();
+  ctx.fillStyle = highlight;
+  ctx.beginPath();
+  ctx.roundRect(cx + 3, y + 8, CAR_W - 6, 18, [3]);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(cx + 2, y + CAR_H - 14, 10, 8);
+  ctx.fillRect(cx + CAR_W - 12, y + CAR_H - 14, 10, 8);
+  ctx.fillRect(cx + 2, y + 2, 10, 8);
+  ctx.fillRect(cx + CAR_W - 12, y + 2, 10, 8);
+  if (isPlayer) {
+    ctx.fillStyle = '#FFD700';
+    ctx.fillRect(cx + 2, y + CAR_H - 6, 10, 4);
+    ctx.fillRect(cx + CAR_W - 12, y + CAR_H - 6, 10, 4);
+  }
+  ctx.restore();
+}
+
+function drawCoin(x, y, pulse) {
+  const r = 10 + Math.sin(pulse) * 1.5;
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#FFD700';
+  ctx.fill();
+  ctx.strokeStyle = '#c9a500';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.fillStyle = '#c9a500';
+  ctx.font = 'bold 11px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('$', x, y);
+  ctx.restore();
+}
+
+function drawParticles() {
+  state.particles = state.particles.filter(p => p.life > 0);
+  state.particles.forEach(p => {
+    ctx.save();
+    ctx.globalAlpha = p.life / p.maxLife;
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.15;
+    p.life--;
+    ctx.restore();
+  });
+}
+
+function spawnParticles(x, y, color) {
+  for (let i = 0; i < 18; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 1 + Math.random() * 4;
+    state.particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 2,
+      size: 3 + Math.random() * 4,
+      color, life: 30, maxLife: 30
+    });
+  }
+}
+
+const ENEMY_COLORS = [
+  ['#e74c3c', '#f1948a'], ['#3498db', '#7fb3d3'], ['#9b59b6', '#c39bd3'],
+  ['#e67e22', '#f0a868'], ['#1abc9c', '#76d7c4'], ['#e91e63', '#f48fb1']
+];
+
+function spawnEnemy() {
+  const lane = Math.floor(Math.random() * LANES.length);
+  const [color, hi] = ENEMY_COLORS[Math.floor(Math.random() * ENEMY_COLORS.length)];
+  state.enemies.push({ lane, x: LANES[lane], y: -CAR_H - 10, color, hi, speed: state.speed * (0.7 + Math.random() * 0.6) });
+}
+
+function spawnCoin() {
+  const lane = Math.floor(Math.random() * LANES.length);
+  state.coins.push({ lane, x: LANES[lane], y: -20, pulse: 0 });
+}
+
+function checkCollision(px, py, ex, ey) {
+  return Math.abs(px - ex) < CAR_W - 4 && Math.abs(py - ey) < CAR_H - 4;
+}
+
+function gameLoop() {
+  if (!state.running) return;
+  state.frame++;
+  ctx.clearRect(0, 0, W, H);
+
+  state.road[0] += state.speed;
+  state.road[1] += state.speed;
+  if (state.road[0] > H) state.road[0] = state.road[1] - H;
+  if (state.road[1] > H) state.road[1] = state.road[0] - H;
+  drawRoad(state.road);
+
+  state.spawnTimer++;
+  const spawnRate = Math.max(28, 60 - Math.floor(state.score / 300) * 3);
+  if (state.spawnTimer >= spawnRate) { spawnEnemy(); state.spawnTimer = 0; }
+  state.coinTimer++;
+  if (state.coinTimer >= 80) { spawnCoin(); state.coinTimer = 0; }
+
+  state.speed = 3.5 + state.score / 1200;
+  state.score++;
+  scoreEl.textContent = Math.floor(state.score / 10);
+
+  const p = state.player;
+  p.x += (LANES[p.lane] - p.x) * 0.18;
+  if (p.invincible > 0) p.invincible--;
+
+  state.enemies = state.enemies.filter(e => e.y < H + CAR_H + 10);
+  state.enemies.forEach(e => {
+    e.y += e.speed + state.speed * 0.4;
+    drawCar(e.x, e.y, e.color, e.hi, false, 0);
+    if (p.invincible === 0 && checkCollision(p.x, p.y, e.x, e.y)) {
+      state.lives--;
+      p.invincible = 90;
+      spawnParticles(p.x, p.y, '#ff4444');
+      updateLives();
+      if (state.lives <= 0) endGame();
+    }
+  });
+
+  state.coins = state.coins.filter(c => c.y < H + 20);
+  state.coins.forEach((c, i) => {
+    c.y += state.speed * 0.8;
+    c.pulse += 0.1;
+    drawCoin(c.x, c.y, c.pulse);
+    if (Math.abs(p.x - c.x) < 22 && Math.abs(p.y - c.y) < 22) {
+      spawnParticles(c.x, c.y, '#FFD700');
+      state.score += 150;
+      state.coins.splice(i, 1);
+    }
+  });
+
+  drawCar(p.x, p.y, '#1D9E75', '#7DCEA0', true, p.invincible);
+  drawParticles();
+
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(0, 0, W, 36);
+  ctx.fillStyle = '#fff';
+  ctx.font = '13px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('Score: ' + Math.floor(state.score / 10), 50, 22);
+  ctx.textAlign = 'right';
+  ctx.fillText('Best: ' + state.best, W - 50, 22);
+
+  raf = requestAnimationFrame(gameLoop);
+}
+
+function updateLives() {
+  const hearts = ['', '❤️', '❤️❤️', '❤️❤️❤️'];
+  livesEl.textContent = hearts[Math.max(0, state.lives)];
+}
+
+function endGame() {
+  state.running = false;
+  cancelAnimationFrame(raf);
+  const finalScore = Math.floor(state.score / 10);
+  if (finalScore > state.best) state.best = finalScore;
+  bestEl.textContent = state.best;
+  overlay.innerHTML = `
+    <h2>💥 Game Over</h2>
+    <p>Score: <strong>${finalScore}</strong> &nbsp;|&nbsp; Best: <strong>${state.best}</strong></p>
+    <button id="startBtn" style="margin-top:8px;padding:10px 28px;border-radius:8px;border:none;background:#1D9E75;color:#fff;font-size:15px;font-weight:600;cursor:pointer;">Play Again</button>
+  `;
+  overlay.style.display = 'flex';
+  document.getElementById('startBtn').onclick = startGame;
+}
+
+function startGame() {
+  overlay.style.display = 'none';
+  newGame();
+  updateLives();
+  cancelAnimationFrame(raf);
+  gameLoop();
+}
+
+document.getElementById('startBtn').onclick = startGame;
+
+document.addEventListener('keydown', e => {
+  if (!state || !state.running) return;
+  if ((e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') && state.player.lane > 0)
+    state.player.lane--;
+  if ((e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') && state.player.lane < LANES.length - 1)
+    state.player.lane++;
+});
+
+function moveLeft()  { if (state && state.running && state.player.lane > 0) state.player.lane--; }
+function moveRight() { if (state && state.running && state.player.lane < LANES.length - 1) state.player.lane++; }
+
+document.getElementById('btnLeft').addEventListener('click', moveLeft);
+document.getElementById('btnRight').addEventListener('click', moveRight);
+document.getElementById('btnLeft').addEventListener('touchstart', e => { e.preventDefault(); moveLeft(); }, { passive: false });
+document.getElementById('btnRight').addEventListener('touchstart', e => { e.preventDefault(); moveRight(); }, { passive: false });
+
+let touchStartX = null;
+canvas.addEventListener('touchstart', e => { touchStartX = e.touches[0].clientX; }, { passive: true });
+canvas.addEventListener('touchend', e => {
+  if (touchStartX === null) return;
+  const dx = e.changedTouches[0].clientX - touchStartX;
+  if (Math.abs(dx) > 30) { if (dx < 0) moveLeft(); else moveRight(); }
+  touchStartX = null;
+}, { passive: true });
+</script>
+</body>
+</html>
